@@ -21,7 +21,7 @@ OBJECT_ARRAY_RVA = 0x97C9D40
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "hyperballin-trainer"
 
 
-def puremove_velocity(direction, velocity, minimum_speed):
+def freemove_velocity(direction, velocity, minimum_speed):
     """Turn immediately toward input without discarding jump or dash momentum."""
     x, y = direction[:2]
     length = math.hypot(x, y)
@@ -83,8 +83,8 @@ class Game:
         self.last_search = 0.0
         self.last_alive = 0.0
         self.backup_path = None
-        self.puremove_airborne = False
-        self.puremove_air_speed = 0.0
+        self.freemove_airborne = False
+        self.freemove_air_speed = 0.0
         if self.name(0) != "None":
             self.close()
             raise NotReady("Name table validation failed")
@@ -356,24 +356,25 @@ class Game:
                 ):
                     for name in names:
                         self.baseline[(group, name)] = self.value(ref, name)
-                self.puremove_airborne = False
-                self.puremove_air_speed = 0.0
+                self.freemove_airborne = False
+                self.freemove_air_speed = 0.0
                 return True
             except (OSError, NotReady, struct.error):
                 continue
         return False
 
-    def apply(self, speed=1.0, jump=1.0, gravity=1.0, tempo=1.0, health=False, cooldowns=False, puremove=False):
+    def apply(self, speed=1.0, jump=1.0, gravity=1.0, tempo=1.0, health=False, cooldowns=False, puremove=False, freemove=False):
         if not self.ready():
             raise NotReady("Waiting for a playable character")
-        if not puremove and abs(speed - 1.0) < 0.001:
+        if not (puremove or freemove) and abs(speed - 1.0) < 0.001:
             self.restore("speed")
         else:
             for group, name in (("movement", "MaxAcceleration"), ("player", "MarbleControlSpeed"),
                                 ("player", "DashingSpeedBurst"), ("player", "MarbleDashSpeedBurst"),
                                 ("player", "SurfingSpeedBurst")):
                 ref = self.player if group == "player" else self.movement
-                multiplier = speed * (8.0 if puremove and name == "MaxAcceleration" else 1.0)
+                response = 8.0 if freemove else 1.25 if puremove else 1.0
+                multiplier = speed * (response if name == "MaxAcceleration" else 1.0)
                 self.set_value(ref, name, self.baseline[(group, name)] * multiplier, "speed")
         for feature, multiplier, settings in (
             ("jump", jump, (("movement", "JumpZVelocity"),)),
@@ -402,24 +403,29 @@ class Game:
         if cooldowns:
             for name in ("CD_Airdash", "CD_Marbledash", "CD_Updash", "CD_Floorsurf"):
                 self.set_value(self.player, name, -1.0)
-        if puremove:
+        if not puremove or freemove:
+            self.restore("puremove")
+        if not freemove:
+            self.restore("freemove")
+            self.freemove_airborne = False
+            self.freemove_air_speed = 0.0
+        if freemove:
             for name, value in (("AirControl", max(4.0, self.baseline[("movement", "AirControl")])),
                                 ("AirControlBoostMultiplier", 1.0), ("AirControlBoostVelocityThreshold", 0.0),
                                 ("FallingLateralFriction", 0.0), ("BrakingDecelerationFalling", 0.0)):
-                self.set_value(self.movement, name, value, "puremove")
-            self.steer_puremove(speed)
-        else:
-            self.restore("puremove")
-            self.puremove_airborne = False
-            self.puremove_air_speed = 0.0
+                self.set_value(self.movement, name, value, "freemove")
+            self.steer_freemove(speed)
+        elif puremove:
+            self.set_value(self.movement, "AirControl",
+                           self.baseline[("movement", "AirControl")] * 1.15, "puremove")
 
-    def steer_puremove(self, speed):
+    def steer_freemove(self, speed):
         velocity = self.value(self.movement, "Velocity")
         airborne = self.value(self.movement, "MovementMode") == 3 or self.value(self.player, "AirTime") > 0.05
-        if airborne and not self.puremove_airborne:
-            self.puremove_air_speed = max(4000.0 * speed, math.hypot(*velocity[:2]) * 1.25)
-        self.puremove_airborne = airborne
-        minimum_speed = self.puremove_air_speed if airborne else 1800.0 * speed
+        if airborne and not self.freemove_airborne:
+            self.freemove_air_speed = max(4000.0 * speed, math.hypot(*velocity[:2]) * 1.25)
+        self.freemove_airborne = airborne
+        minimum_speed = self.freemove_air_speed if airborne else 1800.0 * speed
         direction = self.value(self.player, "ControlInputVector")
         if math.hypot(*direction[:2]) < 0.01:
             if not self.value(self.player, "PressingMove"):
@@ -432,7 +438,7 @@ class Game:
                 yaw = math.radians(yaw)
                 direction = (math.cos(yaw) * forward - math.sin(yaw) * side,
                              math.sin(yaw) * forward + math.cos(yaw) * side, 0.0)
-        target = puremove_velocity(direction, velocity, minimum_speed)
+        target = freemove_velocity(direction, velocity, minimum_speed)
         if target is not None:
             self.set_value(self.movement, "Velocity", target)
 
@@ -557,8 +563,8 @@ def gui():
 
     root = tk.Tk()
     root.title("Hyperballin Trainer")
-    root.geometry("640x770")
-    root.minsize(600, 755)
+    root.geometry("640x810")
+    root.minsize(600, 795)
     style = ttk.Style(root)
     style.theme_use("clam")
     bg, panel, fg, muted, accent = "#111820", "#1c2733", "#eff5fb", "#a6b6c9", "#63dcdb"
@@ -597,8 +603,11 @@ def gui():
             target.configure(text=f"{float(value):.2f}×")
         ttk.Scale(row, from_=low, to=high, variable=var, command=update).pack(side="left", fill="x", expand=True, padx=8)
         var.trace_add("write", lambda *_, v=var, target=value_label: target.configure(text=f"{v.get():.2f}×"))
-    health, cooldowns, puremove = tk.BooleanVar(), tk.BooleanVar(), tk.BooleanVar()
-    ttk.Checkbutton(frame, text="Puremove", variable=puremove).pack(anchor="w", pady=(15, 5))
+    health, cooldowns, puremove, freemove = (tk.BooleanVar() for _ in range(4))
+    ttk.Checkbutton(frame, text="Puremove", variable=puremove,
+                    command=lambda: freemove.set(False) if puremove.get() else None).pack(anchor="w", pady=(15, 5))
+    ttk.Checkbutton(frame, text="Free move", variable=freemove,
+                    command=lambda: puremove.set(False) if freemove.get() else None).pack(anchor="w", pady=5)
     ttk.Checkbutton(frame, text="Hold health full", variable=health).pack(anchor="w", pady=5)
     ttk.Checkbutton(frame, text="Instant ability cooldowns", variable=cooldowns).pack(anchor="w", pady=5)
     state = {"game": None, "closed": False, "last_attach": 0.0, "last_telemetry": 0.0, "event_until": 0.0}
@@ -623,6 +632,7 @@ def gui():
         health.set(False)
         cooldowns.set(False)
         puremove.set(False)
+        freemove.set(False)
         if state["game"]:
             errors = state["game"].restore()
             message("Overrides restored" if not errors else "Some objects changed; restart the game to reset everything")
@@ -691,7 +701,8 @@ def gui():
                 game = state["game"] = Game()
             if game:
                 game.apply(**{name: round(var.get(), 2) for name, var in variables.items()},
-                           health=health.get(), cooldowns=cooldowns.get(), puremove=puremove.get())
+                           health=health.get(), cooldowns=cooldowns.get(),
+                           puremove=puremove.get(), freemove=freemove.get())
                 if now > state["event_until"]:
                     status.set(f"Connected · PID {game.pid}")
                 if now - state["last_telemetry"] >= .25:
@@ -708,7 +719,7 @@ def gui():
                 game.close()
                 state["game"] = None
                 telemetry.set("")
-        root.after(8 if puremove.get() else 50, tick)
+        root.after(8 if freemove.get() else 16 if puremove.get() else 50, tick)
 
     root.protocol("WM_DELETE_WINDOW", close)
     atexit.register(lambda: state["game"].close() if state["game"] else None)
