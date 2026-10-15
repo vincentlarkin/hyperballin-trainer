@@ -11,5 +11,5 @@ mkdir -p dist/licenses
 "$engine" cp "$container_id:/src/dist/LICENSE" dist/LICENSE
 "$engine" cp "$container_id:/src/dist/licenses/." dist/licenses
 chmod +x dist/hyperballin-trainer
-tar -C dist -czf dist/hyperballin-trainer-linux-x86_64.tar.gz hyperballin-trainer LICENSE licenses
+tar --owner=0 --group=0 --numeric-owner -C dist -czf dist/hyperballin-trainer-linux-x86_64.tar.gz hyperballin-trainer LICENSE licenses
 (cd dist && sha256sum hyperballin-trainer-linux-x86_64.tar.gz > SHA256SUMS)
