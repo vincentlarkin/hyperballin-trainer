@@ -1,0 +1,6 @@
+*
+!Containerfile
+!requirements-build.txt
+!trainer.py
+!hyperballin-trainer.spec
+!LICENSE
